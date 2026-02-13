@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Document Verification System</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 12px;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+
+        .main-content {
+            padding: 30px;
+        }
+
+        .alert {
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border-left: 4px solid;
+        }
+
+        .alert-info {
+            background: #dbeafe;
+            border-color: #3b82f6;
+            color: #1e40af;
+        }
+
+        .alert-success {
+            background: #d1fae5;
+            border-color: #10b981;
+            color: #065f46;
+        }
+
+        .alert-error {
+            background: #fee2e2;
+            border-color: #ef4444;
+            color: #991b1b;
+        }
+
+        .upload-section {
+            background: #f9fafb;
+            border: 2px dashed #d1d5db;
+            border-radius: 12px;
+            padding: 40px;
+            text-align: center;
+            margin-bottom: 30px;
+            transition: all 0.3s;
+        }
+
+        .upload-section:hover {
+            border-color: #2563eb;
+            background: #eff6ff;
+        }
+
+        .upload-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .upload-card {
+            background: white;
+            border: 2px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 20px;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+
+        .upload-card:hover {
+            border-color: #3b82f6;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
+        }
+
+        .upload-card.has-file {
+            border-color: #10b981;
+            background: #f0fdf4;
+        }
+
+        .upload-icon {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+
+        .upload-label {
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+
+        .upload-hint {
+            font-size: 12px;
+            color: #6b7280;
+        }
+
+        .file-name {
+            font-size: 14px;
+            color: #059669;
+            margin-top: 10px;
+            font-weight: 500;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .process-btn {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            color: white;
+            padding: 16px 40px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            width: 100%;
+            transition: all 0.3s;
+        }
+
+        .process-btn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(16, 185, 129, 0.3);
+        }
+
+        .process-btn:disabled {
+            background: #9ca3af;
+            cursor: not-allowed;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 40px;
+            background: #f9fafb;
+            border-radius: 12px;
+            margin: 20px 0;
+        }
+
+        .loading.show {
+            display: block;
+        }
+
+        .spinner {
+            border: 4px solid #f3f4f6;
+            border-top: 4px solid #2563eb;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        .results {
+            display: none;
+            margin-top: 30px;
+        }
+
+        .results.show {
+            display: block;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            text-align: center;
+            border: 2px solid #e5e7eb;
+        }
+
+        .stat-value {
+            font-size: 36px;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+
+        .stat-value.success {
+            color: #10b981;
+        }
+
+        .stat-value.error {
+            color: #ef4444;
+        }
+
+        .stat-value.total {
+            color: #3b82f6;
+        }
+
+        .stat-label {
+            font-size: 14px;
+            color: #6b7280;
+        }
+
+        .doc-card {
+            background: white;
+            border: 2px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 25px;
+            margin-bottom: 20px;
+        }
+
+        .doc-card.bl {
+            border-left: 5px solid #3b82f6;
+        }
+
+        .doc-card.invoice {
+            border-left: 5px solid #10b981;
+        }
+
+        .doc-card.packing {
+            border-left: 5px solid #f59e0b;
+        }
+
+        .doc-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #f3f4f6;
+        }
+
+        .doc-title {
+            font-size: 20px;
+            font-weight: 700;
+        }
+
+        .extraction-badge {
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .data-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+        }
+
+        .data-field {
+            background: #f9fafb;
+            padding: 12px;
+            border-radius: 8px;
+        }
+
+        .field-label {
+            font-size: 11px;
+            font-weight: 600;
+            color: #6b7280;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+
+        .field-value {
+            font-size: 15px;
+            color: #1f2937;
+            font-weight: 500;
+        }
+
+        .comparison-section {
+            margin-top: 30px;
+            background: #f9fafb;
+            padding: 25px;
+            border-radius: 12px;
+        }
+
+        .section-title {
+            font-size: 22px;
+            font-weight: 700;
+            margin-bottom: 20px;
+        }
+
+        .comparison-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .comparison-table th,
+        .comparison-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        .comparison-table th {
+            background: #f3f4f6;
+            font-weight: 600;
+            color: #374151;
+            font-size: 13px;
+            text-transform: uppercase;
+        }
+
+        .comparison-table tr:hover {
+            background: #f9fafb;
+        }
+
+        .match-badge {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            display: inline-block;
+        }
+
+        .match-badge.match {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .match-badge.mismatch {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        .cnpj-section {
+            background: white;
+            border: 2px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .cnpj-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .cnpj-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 AI-Powered Document Verification</h1>
+            <p>Real document extraction using Claude AI • Full CNPJ validation • Automated comparison</p>
+            <div class="badge">v2.0 - Production Ready</div>
+        </div>
+
+        <div class="main-content">
+            <div class="alert alert-info" id="infoAlert">
+                <strong>🚀 Real AI Extraction:</strong> Upload your Bill of Lading, Commercial Invoice, and Packing
+                List.
+                Our AI will read and extract ALL information automatically from PDFs, Excel files, and images.
+            </div>
+
+            <div class="upload-section">
+                <h3 style="margin-bottom: 20px;">Upload Your Documents</h3>
+                <div class="upload-grid">
+                    <label for="blFile" class="upload-card" id="blCard">
+                        <div class="upload-icon">📄</div>
+                        <div class="upload-label">Bill of Lading</div>
+                        <div class="upload-hint">Click to upload</div>
+                        <div class="file-name" id="blFileName"></div>
+                        <input type="file" id="blFile" accept=".pdf,.xlsx,.xls,.jpg,.jpeg,.png">
+                    </label>
+
+                    <label for="invoiceFile" class="upload-card" id="invoiceCard">
+                        <div class="upload-icon">📋</div>
+                        <div class="upload-label">Commercial Invoice</div>
+                        <div class="upload-hint">Click to upload</div>
+                        <div class="file-name" id="invoiceFileName"></div>
+                        <input type="file" id="invoiceFile" accept=".pdf,.xlsx,.xls,.jpg,.jpeg,.png">
+                    </label>
+
+                    <label for="packingFile" class="upload-card" id="packingCard">
+                        <div class="upload-icon">📦</div>
+                        <div class="upload-label">Packing List</div>
+                        <div class="upload-hint">Click to upload (optional)</div>
+                        <div class="file-name" id="packingFileName"></div>
+                        <input type="file" id="packingFile" accept=".pdf,.xlsx,.xls,.jpg,.jpeg,.png">
+                    </label>
+                </div>
+            </div>
+
+            <button class="process-btn" id="processBtn" disabled>
+                🔍 Extract & Verify with AI
+            </button>
+
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <h3>AI Processing Documents...</h3>
+                <p id="progressText" style="margin-top: 10px; color: #6b7280;">Initializing...</p>
+            </div>
+
+            <div class="results" id="results">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-value total" id="totalChecks">0</div>
+                        <div class="stat-label">Total Checks</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value success" id="passedChecks">0</div>
+                        <div class="stat-label">✓ Matched</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value error" id="failedChecks">0</div>
+                        <div class="stat-label">✗ Mismatches</div>
+                    </div>
+                </div>
+
+                <div id="cnpjValidation"></div>
+                <div id="extractedData"></div>
+                <div id="comparisonResults"></div>
+                <div style="text-align:right;margin-top:20px">
+                    <button id="reverifyBtn"
+                        style="background:#f59e0b;color:white;padding:12px 20px;border-radius:8px;border:none;font-weight:600;cursor:pointer">
+                        🔄 Reverificar arquivos
+                    </button>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:5000/api';
+        let uploadedFiles = {};
+
+        // File upload handlers
+        ['bl', 'invoice', 'packing'].forEach(type => {
+            document.getElementById(`${type}File`).addEventListener('change', (e) => {
+                handleFileSelect(e, type);
+            });
+        });
+
+        function handleFileSelect(event, type) {
+            const file = event.target.files[0];
+            if (file) {
+                uploadedFiles[type] = file;
+                document.getElementById(`${type}FileName`).textContent = file.name;
+                document.getElementById(`${type}Card`).classList.add('has-file');
+                updateProcessButton();
+            }
+        }
+
+        function updateProcessButton() {
+            const hasFiles = Object.keys(uploadedFiles).length >= 2;
+            document.getElementById('processBtn').disabled = !hasFiles;
+        }
+
+        document.getElementById('processBtn').addEventListener('click', processDocuments);
+
+        async function processDocuments() {
+            try {
+                showLoading(true);
+                hideResults();
+
+                updateProgress('Uploading files to server...');
+
+                // Create FormData
+                const formData = new FormData();
+                Object.entries(uploadedFiles).forEach(([type, file]) => {
+                    formData.append(type, file);
+                });
+
+                // Call complete workflow API
+                const response = await fetch(`${API_URL}/process-complete`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Server error: ${response.status}`);
+                }
+
+                const result = await response.json();
+
+                if (!result.success) {
+                    throw new Error(result.error || 'Processing failed');
+                }
+
+                // Display results
+                displayResults(result.report);
+
+                showLoading(false);
+                showResults();
+
+                showAlert('success', '✅ Documents processed successfully!');
+
+            } catch (error) {
+                showLoading(false);
+                showAlert('error', `❌ Error: ${error.message}`);
+                console.error('Processing error:', error);
+            }
+        }
+
+        function updateProgress(message) {
+            document.getElementById('progressText').textContent = message;
+        }
+
+        function showLoading(show) {
+            document.getElementById('loading').classList.toggle('show', show);
+        }
+
+        function showResults() {
+            document.getElementById('results').classList.add('show');
+        }
+
+        function hideResults() {
+            document.getElementById('results').classList.remove('show');
+        }
+
+        function showAlert(type, message) {
+            const alert = document.getElementById('infoAlert');
+            alert.className = `alert alert-${type}`;
+            alert.innerHTML = message;
+        }
+
+        function displayResults(report) {
+            // Update stats
+            const comp = report.comparison;
+            document.getElementById('totalChecks').textContent = comp.total_checks;
+            document.getElementById('passedChecks').textContent = comp.passed;
+            document.getElementById('failedChecks').textContent = comp.failed;
+
+            // Display CNPJ validation
+            if (report.cnpj_validation) {
+                displayCNPJValidation(report.cnpj_validation);
+            }
+
+            // Display extracted data
+            displayExtractedData(report.extracted_data);
+
+            // Display comparison
+            displayComparison(comp);
+        }
+
+        function displayCNPJValidation(validation) {
+            const html = `
+                <div class="cnpj-section">
+                    <div class="cnpj-header">
+                        <h3>🏢 CNPJ Validation</h3>
+                        <span class="match-badge ${validation.valid ? 'match' : 'mismatch'}">
+                            ${validation.valid ? '✓ Valid' : '✗ Invalid'}
+                        </span>
+                    </div>
+                    ${validation.valid ? `
+                        <div class="cnpj-grid">
+                            <div class="data-field">
+                                <div class="field-label">CNPJ</div>
+                                <div class="field-value">${validation.cnpj || '-'}</div>
+                            </div>
+                            <div class="data-field">
+                                <div class="field-label">Razão Social</div>
+                                <div class="field-value">${validation.razao_social || '-'}</div>
+                            </div>
+                            <div class="data-field">
+                                <div class="field-label">Nome Fantasia</div>
+                                <div class="field-value">${validation.nome_fantasia || '-'}</div>
+                            </div>
+                            <div class="data-field">
+                                <div class="field-label">Situação</div>
+                                <div class="field-value">${validation.situacao || '-'}</div>
+                            </div>
+                            <div class="data-field">
+                                <div class="field-label">Cidade/Estado</div>
+                                <div class="field-value">${validation.cidade || '-'}/${validation.estado || '-'}</div>
+                            </div>
+                        </div>
+                    ` : `
+                        <p style="color: #991b1b;">${validation.error || 'CNPJ not found'}</p>
+                    `}
+                </div>
+            `;
+            document.getElementById('cnpjValidation').innerHTML = html;
+        }
+
+        function displayExtractedData(data) {
+            const docTypes = {
+                bl: { title: 'Bill of Lading', class: 'bl', icon: '📄' },
+                invoice: { title: 'Commercial Invoice', class: 'invoice', icon: '📋' },
+                packing: { title: 'Packing List', class: 'packing', icon: '📦' }
+            };
+
+            let html = '<h2 class="section-title">📄 Extracted Data</h2>';
+
+            Object.entries(data).forEach(([type, extractedData]) => {
+                const docInfo = docTypes[type];
+                html += `
+                    <div class="doc-card ${docInfo.class}">
+                        <div class="doc-header">
+                            <div class="doc-title">${docInfo.icon} ${docInfo.title}</div>
+                            <div class="extraction-badge">
+                                ${extractedData.extraction_method || 'AI Extracted'}
+                            </div>
+                        </div>
+                        <div class="data-grid">
+                            ${Object.entries(extractedData).filter(([key]) =>
+                    !['extraction_method', 'confidence', 'raw_text'].includes(key)
+                ).map(([key, value]) => `
+                                <div class="data-field">
+                                    <div class="field-label">${formatLabel(key)}</div>
+                                    <div class="field-value">${value !== null ? value : '-'}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            });
+
+            document.getElementById('extractedData').innerHTML = html;
+        }
+
+        function displayComparison(comparison) {
+            let html = `
+                <div class="comparison-section">
+                    <h3 class="section-title">🔍 Document Comparison</h3>
+                    <table class="comparison-table">
+                        <thead>
+                            <tr>
+                                <th>Field</th>
+                                <th>Bill of Lading</th>
+                                <th>Invoice</th>
+                                <th>Packing List</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${comparison.details.map(detail => `
+                                <tr>
+                                    <td><strong>${detail.field}</strong></td>
+                                    <td>${detail.values.BL !== undefined ? detail.values.BL : '-'}</td>
+                                    <td>${detail.values.Invoice !== undefined ? detail.values.Invoice : '-'}</td>
+                                    <td>${detail.values.Packing !== undefined ? detail.values.Packing : '-'}</td>
+                                    <td>
+                                        <span class="match-badge ${detail.status}">
+                                            ${detail.status === 'match' ? '✓ Match' : '✗ Mismatch'}
+                                        </span>
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+            document.getElementById('comparisonResults').innerHTML = html;
+        }
+
+        function formatLabel(key) {
+            return key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+        }
+
+        // Check API health on load
+        fetch(`${API_URL}/health`)
+            .then(r => r.json())
+            .then(data => {
+                if (data.ai_enabled) {
+                    showAlert('success', '✅ AI Server Connected • Ready to process documents');
+                } else {
+                    showAlert('error', '⚠️ AI not configured. Please set GEMINI_API_KEY on server');
+                }
+            })
+            .catch(err => {
+                showAlert('error', '❌ Cannot connect to API server. Make sure it\'s running on http://localhost:5000');
+            });
+
+        document.getElementById("reverifyBtn").addEventListener("click", async () => {
+            try {
+                showLoading(true);
+
+                const formData = new FormData();
+                Object.entries(uploadedFiles).forEach(([type, file]) => {
+                    formData.append(type, file);
+                });
+
+                const response = await fetch(`${API_URL}/reverify`, {
+                    method: "POST",
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (!result.success) throw new Error("Reverification failed");
+
+                displayResults(result.report);
+
+                showAlert("success", "🔄 Arquivos reverificados com Gemini");
+
+            } catch (err) {
+                showAlert("error", err.message);
+            } finally {
+                showLoading(false);
+            }
+        });
+
+
+
+    </script>
+</body>
+
+</html>

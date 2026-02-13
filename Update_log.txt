@@ -1,0 +1,21 @@
+Updates - v2
+
+
+Prompt
+
+Atualizar o prompt para sempre capturar todas as informações - **NCM URGENTE
+Atualizar para sempre formatar as informações de forma correta 
+
+
+Features
+
+Adicionar botão verde ao lado de "Reverificar arquivos" chamado "salvar dados" que servira para quando estiver com os dados certos enviar eles para a IA para ela estudar os acertos dela e aumentar os acertos dela 
+
+Melhorar o frontend do projeto (Aparência)
+
+Novas cores
+
+
+Assertividade
+
+Aumentar a assertividade para pelo menos 99% 

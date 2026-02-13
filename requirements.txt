@@ -1,0 +1,23 @@
+# AI-Powered Document Verification System
+# Requirements for Python 3.8+
+
+# Core Dependencies
+requests==2.31.0
+
+# Document Processing
+PyPDF2==3.0.1
+openpyxl==3.1.2
+Pillow==10.2.0
+
+# Web Framework (API Server)
+flask==3.0.2
+flask-cors==4.0.0
+
+# Configuration
+python-dotenv==1.0.1
+
+# Optional: For enhanced functionality
+# beautifulsoup4==4.12.3  # HTML parsing
+# lxml==5.1.0  # XML parsing
+# pytesseract==0.3.10  # OCR (requires Tesseract binary)
+# pycpfcnpj==1.8.0  # Alternative CNPJ validation
