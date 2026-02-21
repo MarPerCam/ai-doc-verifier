@@ -242,3 +242,4 @@ def delete_document_cache_by_hash(file_hash: str):
 
     conn.commit()
     conn.close()
+
