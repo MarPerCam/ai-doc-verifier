@@ -28,7 +28,8 @@ class DocumentData:
     consignee: Optional[str] = None
     cnpj: Optional[str] = None
     localization: Optional[str] = None
-    ncm: Optional[str] = None
+    ncm_4d: Optional[str] = None
+    ncm_8d: Optional[str] = None
     packages: Optional[int] = None
     gross_weight: Optional[float] = None
     cbm: Optional[float] = None
@@ -160,370 +161,331 @@ class AIDocumentExtractor:
     ) -> DocumentData:
         """Call Gemini API with vision capabilities"""
         
-        doc_type_descriptions = {
-            'bl': 'Bill of Lading',
-            'invoice': 'Commercial Invoice',
-            'packing': 'Packing List'
-        }
-        bl_focus = ""
+        prompt = """THIS IS A SHIPPING DOCUMENT ANALYSIS TASK.
 
-        if doc_type == "bl":
-            bl_focus = """
-THIS IS A BILL OF LADING (BL).
+YOU ARE ACTING AS A SENIOR BRAZILIAN CUSTOMS BROKER, TRADE COMPLIANCE ANALYST, AND SHIPPING DOCUMENT AUDITOR.
 
-YOU ARE ACTING AS A SENIOR BRAZILIAN CUSTOMS BROKER AND SHIPPING DOCUMENT ANALYZER.
+YOUR JOB IS TO EXTRACT DATA ONLY FROM THE DOCUMENT PROVIDED.
+THE DOCUMENT MAY BE:
+- BILL OF LADING (BL)
+- PACKING LIST (PL)
+- COMMERCIAL INVOICE (CI)
 
-YOUR JOB IS TO EXTRACT DATA ONLY FROM THIS BILL OF LADING.
+STRICT EXTRACTION RULES:
 
-STRICT EXTRACTION RULES FOR BILL OF LADING:
+GENERAL BEHAVIOR:
+- NEVER guess.
+- NEVER infer from business logic.
+- NEVER copy values from another document type.
+- NEVER create missing values.
+- NEVER "complete" truncated text unless the missing characters are physically visible elsewhere in the SAME document.
+- ONLY use text physically visible in THIS document.
+- If a value is not visible in THIS document, return null.
+- This is a deterministic extraction task, not a reasoning task.
+- Behave like a Receita Federal auditor validating shipping documents.
 
-GENERAL:
+MULTI-PAGE RULES (CRITICAL):
+- YOU MUST READ ALL PAGES before producing the final JSON.
+- DO NOT stop after page 1.
+- If the document has 2, 3, or more pages, inspect every page.
+- Search for values across:
+  1. page headers
+  2. page footers
+  3. main shipment/cargo tables
+  4. continuation tables on later pages
+  5. description of goods blocks
+  6. right-side freight panels
+  7. lower-half freight summaries
+  8. party blocks (shipper / consignee)
+- If the cargo table continues across pages, treat it as ONE continuous table.
+- If the same total is repeated on multiple pages, DO NOT sum duplicates.
+- Prefer the final total or the main shipment total when clearly labeled.
+- If a field appears only on page 2+ and not on page 1, you MUST still extract it.
 
-- NEVER guess values.
-- NEVER infer values from other documents.
-- NEVER copy values from Invoice or Packing List.
-- Only extract what is physically visible in THIS BL.
+DOCUMENT INDEPENDENCE:
+- Each document is independent.
+- BL must be extracted only from BL.
+- PL must be extracted only from PL.
+- CI must be extracted only from CI.
+- Never use Invoice data to fill BL fields.
+- Never use BL data to fill Packing List fields.
+- Never use Packing List data to fill missing CI fields.
 
-SEARCH LOCATIONS (VERY IMPORTANT):
-
-Most BLs contain data inside:
-
-- Shipment tables
-- Cargo description tables
-- Boxes titled: “Cargo Details”, “Description of Goods”, “Marks & Numbers”
-- Columns labeled:
-  - Shipper / Exporter / Consignor
-  - Consignee
-  - Packages / Pkgs / Cartons / Units
-  - Gross Weight / G.W.
-  - Measurement / Volume / CBM / M3
-  - HS Code / NCM / Commodity Code
-
-You MUST inspect:
-
-1. Main cargo table  
-2. Description of goods block  
-3. Any boxed freight summary  
-4. Lower half of the document  
-5. Right-hand freight panels  
-
-If the same value appears multiple times, ALWAYS use the MAIN shipment table.
-
----
-
-SHIPPER & CONSIGNEE:
-
-- Extract ONLY the CONSIGNEE (ignore Notify Party completely).
-- Normalize names:
-  lowercase everything, then capitalize first letter of each word.
-- Remove dots and commas.
-
----
-
-NCM / HS CODE RULES (CRITICAL):
-
-Brazilian NCM format:
-
-- EXACTLY 8 numeric digits
-- Example: 84381000
-- May appear formatted as:
-  84.38.10.00
-  8438.10.00
-  84381000
-
-YOU MUST normalize to 8 digits only.
-
-ACCEPT ONLY IF:
-
-- Contains exactly 8 digits after cleaning.
-- Appears next to labels:
-  "NCM"
-  "HS CODE"
-  "HS"
-  "Commodity Code"
-  "Harmonized Code"
+PRIORITY OF LOCATIONS WITHIN THE SAME DOCUMENT:
+If the same field appears more than once in the SAME document, use this priority:
+1. MAIN shipment / cargo / goods table
+2. Description of Goods / Cargo Details block
+3. Freight summary / totals box
+4. Party block (Shipper / Consignee)
+5. Header / footer repetition
 
 IGNORE:
-
-- 6 digit HS
-- internal product codes
-- invoice item codes
-- container numbers
 - booking references
+- invoice internal item codes
+- container numbers
+- seal numbers
+- SKU
+- model/reference numbers unless explicitly labeled as HS / NCM / Commodity Code
+- notify party for consignee extraction
+- any values that are not clearly associated with the requested field
 
-COMMON BL LOCATIONS FOR NCM:
+====================================================
+FIELDS TO EXTRACT
+====================================================
 
-- Inside Description of Goods
-- Inside Cargo table
-- Under HS CODE column
-- Near commodity description
-
-If multiple codes exist:
-
-- choose the FIRST valid 8 digit NCM.
-
-If NO valid 8-digit NCM exists:
-
-RETURN null.
-
-DO NOT invent NCM.
-
----
-
-PACKAGES:
-
-Look for keywords:
-
-Packages  
-Pkgs  
-Cartons  
-Boxes  
-Volumes  
-
-Return TOTAL quantity.
-
----
-
-WEIGHT:
-
-Extract Gross Weight ONLY.
-
-Normalize to kilograms.
-
----
-
-CBM / VOLUME:
-
-Extract Measurement / CBM / Volume.
-
-Normalize to cubic meters.
-
----
-
-FINAL RULE:
-
-If ANY field does NOT physically exist inside this BL:
-
-RETURN null.
-
-OUTPUT FORMAT:
-
-Return ONLY JSON:
+RETURN ALL FIELDS ALWAYS:
 
 {
   "shipper_name": "...",
   "consignee": "...",
   "cnpj": "...",
   "localization": "...",
-  "ncm": "...",
+  "ncm_4d": "...",
+  "ncm_8d": "...",
   "packages": number,
   "gross_weight": number,
   "cbm": number
 }
 
-NO explanations.
+If a field does not physically exist, return null.
+
+====================================================
+SHIPPER / CONSIGNEE RULES
+====================================================
+
+SHIPPER:
+- Extract only the SHIPPER / EXPORTER / CONSIGNOR legal name.
+- Disconsideer this signals "." "," "/" "-" "_" 
+
+CONSIGNEE:
+- Extract only the CONSIGNEE legal name.
+- IGNORE Notify Party completely.
+- Disconsideer this signals "." "," "/" "-" "_" 
+- If consignee names are similar across the document (more than 80% similarity), treat them as a match and return ONE canonical normalized value.
+
+NAME NORMALIZATION:
+- Convert to lowercase, then capitalize the first letter of each word.
+- Remove dots and commas.
+- Remove accents/diacritics.
+- Remove duplicated spaces.
+- Remove symbols like: -, _, /, \ ONLY when they are punctuation noise.
+- Keep the legal name faithful to the document.
+- DO NOT invent missing words.
+
+NAME RECONCILIATION ACROSS PAGES / BLOCKS:
+- If the same shipper or consignee appears multiple times in the SAME document with minor formatting differences, OCR noise, punctuation variation, or spacing variation, treat them as the SAME entity.
+- If two versions are clearly the same company, return ONE canonical normalized value.
+- Prefer the clearest and most complete version physically visible in the SAME document.
+- If two names are only "similar" but not clearly the same legal entity, DO NOT merge them.
+- Only unify them when the equivalence is obvious from the document itself.
+
+EXAMPLES OF ACCEPTABLE SAME-ENTITY NORMALIZATION:
+- "Acme Ltda." and "ACME LTDA"
+- "Global Trade Importacao Ltda" and "Global Trade Importação Ltda."
+- "Blue Ocean Coml. Ltda" and "Blue Ocean Coml Ltda"
+
+EXAMPLES OF NOT SAFE TO MERGE:
+- "Acme Brasil Ltda" and "Acme Trading Ltda"
+- "Global Foods" and "Global Food Imports"
+
+====================================================
+CNPJ RULES
+====================================================
+
+- Extract only if a Brazilian CNPJ is physically visible in THIS document.
+- CNPJ must have exactly 14 digits after cleanup.
+- Accept formatted versions like:
+  XX.XXX.XXX/XXXX-XX
+- Remove punctuation and return digits only.
+- Ignore CPF.
+- If no valid 14-digit CNPJ is visible, return null.
+
+====================================================
+LOCALIZATION RULES
+====================================================
+
+- Extract only localization physically visible in THIS document.
+- Prefer: City + State.
+- Use the location associated with the relevant party block or official address block.
+- If both city and state are clearly visible, return as:
+  "City, State"
+- If only city is visible and state is missing, return null.
+- If only country is visible, return null.
+- Never infer state from city.
+- Never infer location from CNPJ.
+
+====================================================
+NCM / HS CODE RULES (EXTREMELY CRITICAL)
+====================================================
+
+The document may contain:
+- HS
+- HS CODE
+- NCM
+- Commodity Code
+- Harmonized Code
+- Tariff Code
+
+You MUST search across ALL pages for these labels.
+
+VALID LOCATIONS FOR NCM/HS:
+- Description of Goods
+- Cargo Details
+- Product / Item table
+- HS CODE column
+- NCM column
+- Commodity Code field
+- Goods description line next to NCM/HS
+
+REJECT AS NCM:
+- SKU
+- Item number
+- Internal reference
+- Container number
+- Booking number
+- Seal number
+- Purchase order number
+- Any code with less than 4 digits after cleanup
+
+MULTIPLE NCM RULES (CRITICAL):
+- If the document contains MORE THAN ONE valid NCM/HS code, YOU MUST RETURN ALL OF THEM.
+- Keep the order of appearance from the document.
+- Do NOT collapse different NCMs into one.
+- Do NOT keep duplicates more than once if they are exact duplicates.
+- Return multiple values separated by "/" only.
+- Example:
+  "ncm_4d": "8438/3923/8501"
+  "ncm_8d": "84381000/39232190/85011010"
+
+NORMALIZATION LOGIC:
+1. Remove dots, spaces, hyphens, and punctuation noise.
+2. Keep digits only.
+3. A valid code must have AT LEAST 4 digits.
+
+FOR ncm_4d:
+- If code has 4 or more digits, take the FIRST 4 digits.
+- Return all distinct valid 4-digit headings in document order, separated by "/".
+- If no valid code exists, return null.
+
+FOR ncm_8d:
+- If code has 8 or more digits, take the FIRST 8 digits.
+- Return all distinct valid 8-digit codes in document order, separated by "/".
+- If the document shows only 4, 5, 6, or 7 digits and never shows 8 digits, return null for ncm_8d.
+- NEVER invent the missing 8-digit suffix.
+
+EXAMPLES:
+- 84381000 -> ncm_4d = 8438 ; ncm_8d = 84381000
+- 84.38.10.00 -> ncm_4d = 8438 ; ncm_8d = 84381000
+- 8438 -> ncm_4d = 8438 ; ncm_8d = null
+- 84.38.10 -> digits become 843810 -> ncm_4d = 8438 ; ncm_8d = null
+- If codes are 84381000 and 39232190 -> ncm_4d = 8438/3923 ; ncm_8d = 84381000/39232190
+
+IF MULTIPLE CODES APPEAR IN DIFFERENT PAGES:
+- Read all pages first.
+- Combine all valid distinct codes in order of first appearance.
+
+====================================================
+PACKAGES RULES
+====================================================
+
+Look for:
+- Packages
+- Pkgs
+- Cartons
+- Boxes
+- Volumes
+- Units
+
+RULES:
+- Return the TOTAL quantity physically stated in the document.
+- Prefer the total from the main shipment table or total line.
+- If line-item package quantities are repeated on continuation pages, do not duplicate totals.
+- If only item-level counts exist and a total is not explicitly provided, sum ONLY if the rows are clearly distinct and not duplicate carryovers from another page.
+- If not physically determinable with confidence, return null.
+
+====================================================
+WEIGHT RULES
+====================================================
+
+Extract GROSS WEIGHT ONLY.
+
+Look for:
+- Gross Weight
+- G.W.
+- Gross Wt
+- Total Gross Weight
+
+RULES:
+- Normalize to kilograms.
+- If weight is already in KG/KGS, return numeric value only.
+- If another unit is used and a reliable conversion is not explicitly possible, return null.
+- Never use Net Weight instead of Gross Weight.
+- If both gross and net appear, use gross only.
+- If gross weight appears multiple times, prefer the main total.
+
+====================================================
+CBM / VOLUME RULES
+====================================================
+
+Look for:
+- Measurement
+- CBM
+- Volume
+- M3
+- Cubic Meters
+
+RULES:
+- Normalize to cubic meters.
+- If document already shows CBM / M3, return numeric value only.
+- If volume appears in ft³ and conversion is required, convert using:
+  1 m³ = 35.315 ft³
+- Do not round unless unavoidable.
+- If multiple identical totals repeat across pages, do not sum duplicates.
+- If no physically reliable total exists, return null.
+
+====================================================
+CROSS-CHECK / ANTI-HALLUCINATION RULES
+====================================================
+
+Before returning JSON, perform these checks internally:
+- Did I inspect ALL pages?
+- Did I extract only from THIS document?
+- Did I avoid using data from BL/PL/CI interchangeably?
+- Did I avoid Notify Party when extracting consignee?
+- Did I keep shipper and consignee faithful to the document?
+- If shipper/consignee had small formatting differences, did I normalize them conservatively?
+- Did I return ALL visible valid NCMs, not just the first one?
+- Did I avoid inventing an 8-digit NCM when only 4 digits are visible?
+- Did I avoid copying repeated totals from multiple pages?
+- Is every non-null field physically visible in the document?
+
+If any answer is "no", correct it before returning JSON.
+
+====================================================
+FINAL OUTPUT RULES
+====================================================
+
+Return ONLY valid JSON.
 NO markdown.
 NO comments.
-ONLY JSON.
+NO explanation.
+NO extra keys.
+NO confidence score.
+NO notes.
 
-        """
+OUTPUT EXACTLY:
 
-        doc_description = doc_type_descriptions.get(doc_type, 'shipping document')
-        
-        prompt = bl_focus + """
-You are an expert document analyzer for international shipping. 
-Analyze this {doc_description} and extract the following information with high precision:
-You are a SENIOR BRAZILIAN CUSTOMS BROKER and INTERNATIONAL SHIPPING DOCUMENT ANALYZER.
-
-Model: Gemini 2.5 Flash (Vision + Text).
-
-Your task is deterministic structured extraction.
-
-NO creativity.
-NO guessing.
-NO assumptions.
-
-You MUST behave like Receita Federal auditing documents.
-
----
-
-REQUIRED FIELDS:
-
-1. Shipper Name
-2. Consignee Name
-3. CNPJ (14 digits)
-4. Localization (City + State)
-5. NCM (8 digits Brazilian classification)
-6. Packages
-7. Gross Weight (kg)
-8. CBM (m³)
-
----
-
-DOCUMENT TYPES:
-
-Bill of Lading (BL)
-Commercial Invoice (CI)
-Packing List (PL)
-
-Each document is independent.
-
-Never copy values between documents.
-
----
-
-SHIPPER / CONSIGNEE:
-
-- Extract legal company names.
-- Normalize:
-  lowercase → capitalize first letter per word.
-- Remove dots and commas.
-- Remove "acentos" (á, é, í, ó, ú, â, ê, î, ô, û, ã, õ, ç)
-- Remove - _ / \ symbols
-- Disconsider " " , don't remove only Disconsider
-
----
-
-CNPJ RULES:
-
-Brazilian CNPJ:
-
-- Exactly 14 digits
-- May appear formatted:
-  XX.XXX.XXX/XXXX-XX
-
-Accept only if 14 digits after cleanup.
-
-Ignore CPF.
-
----
-
-NCM RULES (EXTREMELY IMPORTANT):
-
-Brazilian NCM:
-
-- ALWAYS 4 numeric digits
-- Examples:
-  8438
-  84.38
-  8438
-
-Normalize to:
-
-8438
-
-VALID ONLY IF:
-
-- After cleanup contains exactly 4 digits
-- Appears near:
-
-"NCM"
-"HS CODE"
-"HS"
-"Commodity Code"
-"Harmonized"
-
-REJECT:
-
-- 6 digit HS
-- SKU
-- Item numbers
-- Product IDs
-- container numbers
-
-DOCUMENT SOURCES:
-
-BL:
-- Description of Goods
-- Cargo table
-- HS CODE column
-
-Invoice:
-- Item table
-- Product description
-- Fiscal classification
-
-Packing:
-- Rarely contains NCM
-- Only accept if explicitly labeled
-
-PRIORITY ORDER:
-
-1️⃣ BL  
-2️⃣ Invoice  
-3️⃣ Packing (last resort)
-
-If missing in BL → null for BL.
-
-If missing in BOTH BL and Invoice → null.
-
-Never infer.
-
----
-
-PACKAGES:
-
-Extract TOTAL quantity using:
-
-Don't create values, only extract what exists in the document.
-
-packages  
-cartons  
-boxes  
-volumes  
-pkgs  
-
----
-
-WEIGHT:
-
-Extract GROSS weight only.
-
-Convert to KG if needed.
-
----
-
-CBM:
-
-Extract Measurement / Volume.
-
-Convert ft³ → m³  
-(1 m³ = 35.315 ft³)
-
----
-
-NUMERIC PRECISION:
-
-Never round unless unavoidable.
-
----
-
-NULL RULE:
-
-If field does not physically exist → null.
-
----
-
-JSON OUTPUT:
-
-Return ALL fields always:
-
-{{
+{
   "shipper_name": "...",
   "consignee": "...",
   "cnpj": "...",
-  "localization": "City, State",
-  "ncm": "...",
+  "localization": "...",
+  "ncm_4d": "...",
+  "ncm_8d": "...",
   "packages": number,
   "gross_weight": number,
   "cbm": number
-}}
-
-NO additional text.
-NO explanation.
-ONLY JSON.
-
-Failure to follow this schema is considered an extraction error.
+}
 """
 
         try:
@@ -583,7 +545,8 @@ Failure to follow this schema is considered an extraction error.
                     consignee=data.get('consignee'),
                     cnpj=data.get('cnpj'),
                     localization=data.get('localization'),
-                    ncm=data.get('ncm'),
+                    ncm_4d=data.get('ncm_4d'),
+                    ncm_8d=data.get('ncm_8d'),
                     packages=int(data.get('packages')) if data.get('packages') else None,
                     gross_weight=float(data.get('gross_weight')) if data.get('gross_weight') else None,
                     cbm=float(data.get('cbm')) if data.get('cbm') else None,
@@ -603,24 +566,327 @@ Failure to follow this schema is considered an extraction error.
     def _call_gemini_text(self, text: str, doc_type: str) -> DocumentData:
         """Call Gemini API with text content (for Excel)"""
         
-        prompt = f"""Extract shipping document information from this text.
+        prompt = f"""THIS IS A SHIPPING DOCUMENT ANALYSIS TASK.
 
-Text content:
-{text}
+YOU ARE ACTING AS A SENIOR BRAZILIAN CUSTOMS BROKER, TRADE COMPLIANCE ANALYST, AND SHIPPING DOCUMENT AUDITOR.
 
-Extract these fields and return as JSON:
+YOUR JOB IS TO EXTRACT DATA ONLY FROM THE DOCUMENT PROVIDED.
+THE DOCUMENT MAY BE:
+- BILL OF LADING (BL)
+- PACKING LIST (PL)
+- COMMERCIAL INVOICE (CI)
+
+STRICT EXTRACTION RULES:
+
+GENERAL BEHAVIOR:
+- NEVER guess.
+- NEVER infer from business logic.
+- NEVER copy values from another document type.
+- NEVER create missing values.
+- NEVER “complete” truncated text unless the missing characters are physically visible elsewhere in the SAME document.
+- ONLY use text physically visible in THIS document.
+- If a value is not visible in THIS document, return null.
+- This is a deterministic extraction task, not a reasoning task.
+- Behave like a Receita Federal auditor validating shipping documents.
+
+MULTI-PAGE RULES (CRITICAL):
+- YOU MUST READ ALL PAGES before producing the final JSON.
+- DO NOT stop after page 1.
+- If the document has 2, 3, or more pages, inspect every page.
+- If the cargo table continues across pages, treat it as ONE continuous table.
+- If the same total is repeated on multiple pages, DO NOT sum duplicates.
+- Prefer the final total or the main shipment total when clearly labeled.
+- If a field appears only on page 2+ and not on page 1, you MUST still extract it.
+
+DOCUMENT INDEPENDENCE:
+- Each document is independent.
+- BL must be extracted only from BL.
+- PL must be extracted only from PL.
+- CI must be extracted only from CI.
+- Never use Invoice data to fill BL fields.
+- Never use BL data to fill Packing List fields.
+- Never use Packing List data to fill missing CI fields.
+
+PRIORITY OF LOCATIONS WITHIN THE SAME DOCUMENT:
+If the same field appears more than once in the SAME document, use this priority:
+1. MAIN shipment / cargo / goods table
+2. Description of Goods / Cargo Details block
+3. Freight summary / totals box
+4. Party block (Shipper / Consignee)
+5. Header / footer repetition
+
+IGNORE:
+- booking references
+- invoice internal item codes
+- container numbers
+- seal numbers
+- SKU
+- model/reference numbers unless explicitly labeled as HS / NCM / Commodity Code
+- notify party for consignee extraction
+- any values that are not clearly associated with the requested field
+
+====================================================
+FIELDS TO EXTRACT
+====================================================
+
+RETURN ALL FIELDS ALWAYS:
+
 {{
-    "shipper_name": "...",
-    "consignee": "...",
-    "cnpj": "...",
-    "localization": "...",
-    "ncm": "...",
-    "packages": number,
-    "gross_weight": number,
-    "cbm": number
+  "shipper_name": "...",
+  "consignee": "...",
+  "cnpj": "...",
+  "localization": "...",
+  "ncm_4d": "...",
+  "ncm_8d": "...",
+  "packages": number,
+  "gross_weight": number,
+  "cbm": number
 }}
 
-Return only the JSON, no explanation."""
+If a field does not physically exist, return null.
+
+====================================================
+SHIPPER / CONSIGNEE RULES
+====================================================
+
+SHIPPER:
+- Extract only the SHIPPER / EXPORTER / CONSIGNOR legal name.
+- Disconsideer this signals "." "," "/" "-" "_" 
+
+CONSIGNEE:
+- Extract only the CONSIGNEE legal name.
+- IGNORE Notify Party completely.
+- Disconsideer this signals "." "," "/" "-" "_" 
+- If consignee names are similar across the document (more than 80% similarity),treat them as a match and return all them equal.
+
+NAME NORMALIZATION:
+- Convert to lowercase, then capitalize the first letter of each word.
+- Remove dots and commas.
+- Remove accents/diacritics.
+- Remove duplicated spaces.
+- Remove symbols like: -, _, /, \\ ONLY when they are punctuation noise.
+- Keep the legal name faithful to the document.
+- DO NOT invent missing words.
+
+NAME RECONCILIATION ACROSS PAGES / BLOCKS:
+- If the same shipper or consignee appears multiple times in the SAME document with minor formatting differences, OCR noise, punctuation variation, or spacing variation, treat them as the SAME entity.
+- If two versions are clearly the same company, return ONE canonical normalized value.
+- Prefer the clearest and most complete version physically visible in the SAME document.
+- If two names are only “similar” but not clearly the same legal entity, DO NOT merge them.
+- Only unify them when the equivalence is obvious from the document itself.
+
+EXAMPLES OF ACCEPTABLE SAME-ENTITY NORMALIZATION:
+- “Acme Ltda.” and “ACME LTDA”
+- “Global Trade Importacao Ltda” and “Global Trade Importação Ltda.”
+- “Blue Ocean Coml. Ltda” and “Blue Ocean Coml Ltda”
+
+EXAMPLES OF NOT SAFE TO MERGE:
+- “Acme Brasil Ltda” and “Acme Trading Ltda”
+- “Global Foods” and “Global Food Imports”
+
+====================================================
+CNPJ RULES
+====================================================
+
+- Extract only if a Brazilian CNPJ is physically visible in THIS document.
+- CNPJ must have exactly 14 digits after cleanup.
+- Accept formatted versions like:
+  XX.XXX.XXX/XXXX-XX
+- Remove punctuation and return digits only.
+- Ignore CPF.
+- If no valid 14-digit CNPJ is visible, return null.
+
+====================================================
+LOCALIZATION RULES
+====================================================
+
+- Extract only localization physically visible in THIS document.
+- Prefer: City + State.
+- Use the location associated with the relevant party block or official address block.
+- If both city and state are clearly visible, return as:
+  "City, State"
+- If only city is visible and state is missing, return null.
+- If only country is visible, return null.
+- Never infer state from city.
+- Never infer location from CNPJ.
+
+====================================================
+NCM / HS CODE RULES (EXTREMELY CRITICAL)
+====================================================
+
+The document may contain:
+- HS
+- HS CODE
+- NCM
+- Commodity Code
+- Harmonized Code
+- Tariff Code
+
+You MUST search across ALL pages for these labels.
+
+VALID LOCATIONS FOR NCM/HS:
+- Description of Goods
+- Cargo Details
+- Product / Item table
+- HS CODE column
+- NCM column
+- Commodity Code field
+- Goods description line next to NCM/HS
+
+REJECT AS NCM:
+- SKU
+- Item number
+- Internal reference
+- Container number
+- Booking number
+- Seal number
+- Purchase order number
+- Any code with less than 4 digits after cleanup
+
+MULTIPLE NCM RULES (CRITICAL):
+- If the document contains MORE THAN ONE valid NCM/HS code, YOU MUST RETURN ALL OF THEM.
+- Keep the order of appearance from the document.
+- Do NOT collapse different NCMs into one.
+- Do NOT keep duplicates more than once if they are exact duplicates.
+- Return multiple values separated by "/" only.
+- Example:
+  "ncm_4d": "8438/3923/8501"
+  "ncm_8d": "84381000/39232190/85011010"
+
+NORMALIZATION LOGIC:
+1. Remove dots, spaces, hyphens, and punctuation noise.
+2. Keep digits only.
+3. A valid code must have AT LEAST 4 digits.
+
+FOR ncm_4d:
+- If code has 4 or more digits, take the FIRST 4 digits.
+- Return all distinct valid 4-digit headings in document order, separated by "/".
+- If no valid code exists, return null.
+
+FOR ncm_8d:
+- If code has 8 or more digits, take the FIRST 8 digits.
+- Return all distinct valid 8-digit codes in document order, separated by "/".
+- If the document shows only 4, 5, 6, or 7 digits and never shows 8 digits, return null for ncm_8d.
+- NEVER invent the missing 8-digit suffix.
+
+EXAMPLES:
+- 84381000 -> ncm_4d = 8438 ; ncm_8d = 84381000
+- 84.38.10.00 -> ncm_4d = 8438 ; ncm_8d = 84381000
+- 8438 -> ncm_4d = 8438 ; ncm_8d = null
+- 84.38.10 -> digits become 843810 -> ncm_4d = 8438 ; ncm_8d = null
+- If codes are 84381000 and 39232190 -> ncm_4d = 8438/3923 ; ncm_8d = 84381000/39232190
+
+IF MULTIPLE CODES APPEAR IN DIFFERENT PAGES:
+- Read all pages first.
+- Combine all valid distinct codes in order of first appearance.
+
+====================================================
+PACKAGES RULES
+====================================================
+
+Look for:
+- Packages
+- Pkgs
+- Cartons
+- Boxes
+- Volumes
+- Units
+
+RULES:
+- Return the TOTAL quantity physically stated in the document.
+- Prefer the total from the main shipment table or total line.
+- If line-item package quantities are repeated on continuation pages, do not duplicate totals.
+- If only item-level counts exist and a total is not explicitly provided, sum ONLY if the rows are clearly distinct and not duplicate carryovers from another page.
+- If not physically determinable with confidence, return null.
+
+====================================================
+WEIGHT RULES
+====================================================
+
+Extract GROSS WEIGHT ONLY.
+
+Look for:
+- Gross Weight
+- G.W.
+- Gross Wt
+- Total Gross Weight
+
+RULES:
+- Normalize to kilograms.
+- If weight is already in KG/KGS, return numeric value only.
+- If another unit is used and a reliable conversion is not explicitly possible, return null.
+- Never use Net Weight instead of Gross Weight.
+- If both gross and net appear, use gross only.
+- If gross weight appears multiple times, prefer the main total.
+
+====================================================
+CBM / VOLUME RULES
+====================================================
+
+Look for:
+- Measurement
+- CBM
+- Volume
+- M3
+- Cubic Meters
+
+RULES:
+- Normalize to cubic meters.
+- If document already shows CBM / M3, return numeric value only.
+- If volume appears in ft³ and conversion is required, convert using:
+  1 m³ = 35.315 ft³
+- Do not round unless unavoidable.
+- If multiple identical totals repeat across pages, do not sum duplicates.
+- If no physically reliable total exists, return null.
+
+====================================================
+CROSS-CHECK / ANTI-HALLUCINATION RULES
+====================================================
+
+Before returning JSON, perform these checks internally:
+- Did I inspect ALL pages?
+- Did I extract only from THIS document?
+- Did I avoid using data from BL/PL/CI interchangeably?
+- Did I avoid Notify Party when extracting consignee?
+- Did I keep shipper and consignee faithful to the document?
+- If shipper/consignee had small formatting differences, did I normalize them conservatively?
+- Did I return ALL visible valid NCMs, not just the first one?
+- Did I avoid inventing an 8-digit NCM when only 4 digits are visible?
+- Did I avoid copying repeated totals from multiple pages?
+- Is every non-null field physically visible in the document?
+
+If any answer is "no", correct it before returning JSON.
+
+====================================================
+FINAL OUTPUT RULES
+====================================================
+
+Return ONLY valid JSON.
+NO markdown.
+NO comments.
+NO explanation.
+NO extra keys.
+NO confidence score.
+NO notes.
+
+OUTPUT EXACTLY:
+
+{{
+  "shipper_name": "...",
+  "consignee": "...",
+  "cnpj": "...",
+  "localization": "...",
+  "ncm_4d": "...",
+  "ncm_8d": "...",
+  "packages": number,
+  "gross_weight": number,
+  "cbm": number
+}}
+
+TEXT CONTENT TO ANALYZE:
+========================
+{text}
+"""
 
         try:
             url = f"{GEMINI_API_URL}?key={self.api_key}"
@@ -671,7 +937,8 @@ Return only the JSON, no explanation."""
                     consignee=data.get('consignee'),
                     cnpj=data.get('cnpj'),
                     localization=data.get('localization'),
-                    ncm=data.get('ncm'),
+                    ncm_4d=data.get('ncm_4d'),
+                    ncm_8d=data.get('ncm_8d'),
                     packages=int(data.get('packages')) if data.get('packages') else None,
                     gross_weight=float(data.get('gross_weight')) if data.get('gross_weight') else None,
                     cbm=float(data.get('cbm')) if data.get('cbm') else None,
@@ -802,8 +1069,14 @@ class DocumentComparator:
                 "type": "cnpj"
             },
             {
-                "field": "NCM Code",
-                "key": "ncm",
+                "field": "NCM 4 Digits",
+                "key": "ncm_4d",
+                "docs": [("BL", bl), ("Invoice", invoice)],
+                "type": "text"
+            },
+            {
+                "field": "NCM 8 Digits",
+                "key": "ncm_8d",
                 "docs": [("BL", bl), ("Invoice", invoice)],
                 "type": "text"
             },
@@ -842,7 +1115,7 @@ class DocumentComparator:
             if not values:
                 continue
                         # Special rule for NCM: must exist in BOTH BL and Invoice
-            if comp["key"] == "ncm":
+            if comp["key"] in ("ncm_4d", "ncm_8d"):
                 required_docs = {"BL", "Invoice"}
                 if set(values.keys()) != required_docs:
                     results["total_checks"] += 1
