@@ -1,44 +1,24 @@
+# backend/api_server.py
 """
 Flask API Server for AI-Powered Document Verification
 - Upload documents
 - Extract with Gemini (via ai_backend_gemini.py)
-- Cache per document + cache per workflow
-- Force re-verify: bypass caches and overwrite DB
+- Cache per document + cache per workflow (SQLite)
+- Reverify: clears ONLY caches for current uploaded docs + current workflow, then reprocesses
 """
-def save_uploaded_file(file, doc_type):
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{timestamp}_{doc_type}_{file.filename}"
-    filepath = os.path.join(UPLOAD_FOLDER, filename)
-    file.save(filepath)
-    return filepath
 
-from dotenv import load_dotenv
-load_dotenv()
+from __future__ import annotations
 
-import os
 import json
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, Optional
 
-from flask import Flask, request, jsonify, send_from_directory
+from dotenv import load_dotenv
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
-from pathlib import Path
-
-
-import database
-from database import (
-    init_db,
-    get_document_cache,
-    save_document_cache,
-    get_workflow_cache,
-    save_workflow_cache,
-    delete_workflow_cache,
-    delete_document_cache_by_hash 
-)
-
-from utils import sha256_file, workflow_hash
 
 from ai_backend_gemini import (
     AIDocumentExtractor,
@@ -46,47 +26,41 @@ from ai_backend_gemini import (
     DocumentComparator,
     DocumentData,
 )
+from database import (
+    delete_document_cache_by_hash,
+    delete_workflow_cache,
+    get_document_cache,
+    get_workflow_cache,
+    init_db,
+    save_document_cache,
+    save_workflow_cache,
+)
+from utils import sha256_file, workflow_hash
+
+load_dotenv()
+
+# -----------------------------------------------------------------------------
+# Paths / Config
+# -----------------------------------------------------------------------------
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_FOLDER = BASE_DIR / "uploads"
-
-UPLOAD_FOLDER.mkdir(exist_ok=True, parents=True)
-
-
-
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
-
-
-# -----------------------------------------------------------------------------
-# App + folders
-# -----------------------------------------------------------------------------
-
-
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
-
-def save_uploaded_file(file, doc_type):
-    filename = secure_filename(file.filename)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = os.path.join(UPLOAD_FOLDER, f"{ts}_{doc_type}_{filename}")
-    file.save(path)
-    return path
-
-
-app = Flask(__name__)
-CORS(app)
-
-UPLOAD_FOLDER = "uploads"
-OUTPUT_FOLDER = Path(__file__).parent.parent / "outputs"
-LOGS_FOLDER = Path(__file__).parent.parent / "logs"
+OUTPUT_FOLDER = BASE_DIR / "outputs"
+LOGS_FOLDER = BASE_DIR / "logs"
 
 ALLOWED_EXTENSIONS = {"pdf", "xlsx", "xls", "jpg", "jpeg", "png"}
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB
 
-UPLOAD_FOLDER.mkdir(exist_ok=True, parents=True)
-OUTPUT_FOLDER.mkdir(exist_ok=True, parents=True)
-LOGS_FOLDER.mkdir(exist_ok=True, parents=True)
+UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
+OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
+LOGS_FOLDER.mkdir(parents=True, exist_ok=True)
+
+# -----------------------------------------------------------------------------
+# App
+# -----------------------------------------------------------------------------
+
+app = Flask(__name__)
+CORS(app)
 
 app.config["UPLOAD_FOLDER"] = str(UPLOAD_FOLDER)
 app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_SIZE
@@ -122,6 +96,7 @@ except Exception as e:
 # Helpers
 # -----------------------------------------------------------------------------
 
+
 def now_iso() -> str:
     return datetime.now().isoformat()
 
@@ -130,13 +105,23 @@ def allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
+def save_uploaded_file(file_storage, doc_type: str) -> Path:
+    filename = secure_filename(file_storage.filename or "")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    unique_name = f"{ts}_{doc_type}_{filename}"
+    path = UPLOAD_FOLDER / unique_name
+    file_storage.save(path)
+    return path
+
+
 def _as_dict(doc: DocumentData) -> dict:
     return {
         "shipper_name": doc.shipper_name,
         "consignee": doc.consignee,
         "cnpj": doc.cnpj,
         "localization": doc.localization,
-        "ncm": doc.ncm,
+        "ncm_4d": getattr(doc, "ncm_4d", None),
+        "ncm_8d": getattr(doc, "ncm_8d", None),
         "packages": doc.packages,
         "gross_weight": doc.gross_weight,
         "cbm": doc.cbm,
@@ -146,40 +131,112 @@ def _as_dict(doc: DocumentData) -> dict:
 
 
 def _extract_with_cache(filepath: str, doc_type: str, force: bool) -> dict:
-    """
-    Retorna dict com os campos extraídos.
-    - Se force=False: usa cache se existir
-    - Se force=True: ignora cache e sobrescreve cache
-    """
-    fh = sha256_file(filepath)
+    file_hash = sha256_file(filepath)
 
     if not force:
-        cached = get_document_cache(fh, doc_type)
+        cached = get_document_cache(file_hash, doc_type)
         if cached:
-            logger.info(f"📦 Document cache HIT ({doc_type})")
+            logger.info("📦 Document cache HIT (%s)", doc_type)
             return cached
 
-    logger.info(f"🤖 Extracting ({doc_type}) force={force}")
+    logger.info("🤖 Extracting (%s) force=%s", doc_type, force)
     data = ai_extractor.extract_from_file(filepath, doc_type)
     data_dict = _as_dict(data)
 
-    # sobrescreve cache
-    save_document_cache(fh, doc_type, Path(filepath).name, data_dict)
+    save_document_cache(file_hash, doc_type, Path(filepath).name, data_dict)
     return data_dict
+
+
+def _build_report(files: Dict[str, str], extracted_data: Dict[str, dict]) -> Dict[str, Any]:
+    cnpj_validation = None
+    cnpj = extracted_data.get("bl", {}).get("cnpj") or extracted_data.get("invoice", {}).get("cnpj")
+    if cnpj:
+        cnpj_validation = CNPJValidator().validate_online(cnpj)
+
+    bl_obj = DocumentData(**extracted_data["bl"])
+    inv_obj = DocumentData(**extracted_data["invoice"])
+    pk_obj = DocumentData(**extracted_data["packing"]) if "packing" in extracted_data else None
+
+    comparison = DocumentComparator().compare(bl_obj, inv_obj, pk_obj)
+
+    total = comparison.get("total_checks", 0)
+    passed = comparison.get("passed", 0)
+
+    return {
+        "timestamp": now_iso(),
+        "documents_processed": list(files.keys()),
+        "extracted_data": extracted_data,
+        "cnpj_validation": cnpj_validation,
+        "comparison": comparison,
+        "summary": {
+            "total_checks": total,
+            "passed": passed,
+            "failed": comparison.get("failed", 0),
+            "success_rate": f"{(passed / total * 100):.1f}%" if total else "N/A",
+        },
+    }
+
+
+def _save_report_file(report: Dict[str, Any]) -> str:
+    report_filename = f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    report_path = OUTPUT_FOLDER / report_filename
+    report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    return report_filename
+
+
+def _collect_files_from_request() -> Dict[str, str]:
+    files: Dict[str, str] = {}
+    for key in ["bl", "invoice", "packing"]:
+        if key in request.files:
+            f = request.files[key]
+            if f and f.filename:
+                path = save_uploaded_file(f, key)
+                files[key] = str(path)
+                logger.info("Saved %s: %s", key, path.name)
+    return files
 
 
 # -----------------------------------------------------------------------------
 # Routes
 # -----------------------------------------------------------------------------
 
+
+@app.route("/", methods=["GET"])
+def home():
+    return """
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>ai-doc-verifier</title>
+  </head>
+  <body style="font-family: Arial; padding: 16px;">
+    <h2>ai-doc-verifier API online ✅</h2>
+    <p>Este servidor é a API. O frontend roda separado (porta 5500).</p>
+    <ul>
+      <li><a href="/api/health">/api/health</a></li>
+      <li>POST /api/process-complete</li>
+      <li>POST /api/reverify</li>
+    </ul>
+  </body>
+</html>
+""", 200
+
+
+@app.route("/favicon.ico", methods=["GET"])
+def favicon():
+    return "", 204
+
 @app.route("/api/health", methods=["GET"])
 def health():
-    return jsonify({
-        "ok": True,
-        "timestamp": now_iso(),
-        "ai_enabled": ai_extractor is not None,
-        "version": "2.0.0"
-    })
+    return jsonify(
+        {
+            "ok": True,
+            "timestamp": now_iso(),
+            "ai_enabled": ai_extractor is not None,
+            "version": "3.0.0",
+        }
+    )
 
 
 @app.route("/api/upload", methods=["POST"])
@@ -195,25 +252,21 @@ def upload():
             return jsonify({"error": "No file selected"}), 400
 
         if not allowed_file(file.filename):
-            return jsonify({"error": f"File type not allowed. Supported: {', '.join(ALLOWED_EXTENSIONS)}"}), 400
+            return jsonify(
+                {"error": f"File type not allowed. Supported: {', '.join(sorted(ALLOWED_EXTENSIONS))}"}
+            ), 400
 
-        filename = secure_filename(file.filename)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        unique_name = f"{ts}_{doc_type}_{filename}"
-        filepath = UPLOAD_FOLDER / unique_name
+        filepath = save_uploaded_file(file, doc_type)
 
-        file.save(filepath)
-
-        logger.info(f"Saved upload: {unique_name} ({doc_type})")
-
-        return jsonify({
-            "success": True,
-            "filename": unique_name,
-            "original_name": filename,
-            "doc_type": doc_type,
-            "size": filepath.stat().st_size,
-            "path": str(filepath),
-        }), 200
+        return jsonify(
+            {
+                "success": True,
+                "filename": filepath.name,
+                "doc_type": doc_type,
+                "size": filepath.stat().st_size,
+                "path": str(filepath),
+            }
+        ), 200
 
     except Exception as e:
         logger.exception("Upload error")
@@ -233,16 +286,13 @@ def extract():
 
         if not filepath:
             return jsonify({"error": "No filepath provided"}), 400
-        if not os.path.exists(filepath):
+
+        path = Path(filepath)
+        if not path.exists():
             return jsonify({"error": f"File not found: {filepath}"}), 404
 
-        data_dict = _extract_with_cache(filepath, doc_type, force=force)
-
-        return jsonify({
-            "success": True,
-            "doc_type": doc_type,
-            "data": data_dict,
-        }), 200
+        data_dict = _extract_with_cache(str(path), doc_type, force=force)
+        return jsonify({"success": True, "doc_type": doc_type, "data": data_dict}), 200
 
     except Exception as e:
         logger.exception("Extraction error")
@@ -251,113 +301,61 @@ def extract():
 
 @app.route("/api/process-complete", methods=["POST"])
 def process_complete():
-    """
-    Multipart: bl, invoice, packing(optional)
-    Query param:
-      - force=1 -> ignora caches, recalcula e SOBRESCREVE caches
-    """
     try:
         if not ai_extractor:
             return jsonify({"error": "AI extractor not initialized. Check GEMINI_API_KEY"}), 500
 
         force = request.args.get("force", "0") == "1"
 
-        # salvar arquivos
-        files = {}
-        for key in ["bl", "invoice", "packing"]:
-            if key in request.files:
-                f = request.files[key]
-                if f and f.filename:
-                    filename = secure_filename(f.filename)
-                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    unique_name = f"{ts}_{key}_{filename}"
-                    path = UPLOAD_FOLDER / unique_name
-                    f.save(path)
-                    files[key] = str(path)
-                    logger.info(f"Saved {key}: {unique_name}")
-
+        files = _collect_files_from_request()
         if "bl" not in files or "invoice" not in files:
             return jsonify({"error": "At least BL and Invoice are required"}), 400
 
-        # hashes por conteúdo
         bl_h = sha256_file(files["bl"])
         inv_h = sha256_file(files["invoice"])
         pk_h = sha256_file(files["packing"]) if "packing" in files else None
         wf_h = workflow_hash(bl_h, inv_h, pk_h)
 
-        # workflow cache
         if not force:
             cached = get_workflow_cache(wf_h)
             if cached:
                 logger.info("Workflow cache HIT — returning stored report")
-                return jsonify({
-                    "success": True,
-                    "report": cached,
-                    "cached": True,
-                    "workflow_hash": wf_h,
-                    "files": files,   # ajuda o frontend a reverificar sem reupload
-                }), 200
+                return jsonify(
+                    {
+                        "success": True,
+                        "report": cached,
+                        "cached": True,
+                        "workflow_hash": wf_h,
+                        "files": files,
+                    }
+                ), 200
 
-        # force -> apaga workflow cache anterior (para não “voltar”)
         if force:
             delete_workflow_cache(wf_h)
 
-        # extrair documentos (com/sem cache conforme force)
-        extracted_data = {}
-        extracted_data["bl"] = _extract_with_cache(files["bl"], "bl", force=force)
-        extracted_data["invoice"] = _extract_with_cache(files["invoice"], "invoice", force=force)
+        extracted_data: Dict[str, dict] = {
+            "bl": _extract_with_cache(files["bl"], "bl", force=force),
+            "invoice": _extract_with_cache(files["invoice"], "invoice", force=force),
+        }
         if "packing" in files:
             extracted_data["packing"] = _extract_with_cache(files["packing"], "packing", force=force)
 
-        # validar cnpj
-        cnpj_validation = None
-        cnpj = extracted_data.get("bl", {}).get("cnpj") or extracted_data.get("invoice", {}).get("cnpj")
-        if cnpj:
-            cnpj_validation = CNPJValidator().validate_online(cnpj)
+        report = _build_report(files, extracted_data)
 
-        # comparar
-        bl_obj = DocumentData(**extracted_data["bl"])
-        inv_obj = DocumentData(**extracted_data["invoice"])
-        pk_obj = DocumentData(**extracted_data["packing"]) if "packing" in extracted_data else None
-
-        comparison = DocumentComparator().compare(bl_obj, inv_obj, pk_obj)
-
-        report = {
-            "timestamp": now_iso(),
-            "documents_processed": list(files.keys()),
-            "extracted_data": extracted_data,
-            "cnpj_validation": cnpj_validation,
-            "comparison": comparison,
-            "summary": {
-                "total_checks": comparison.get("total_checks", 0),
-                "passed": comparison.get("passed", 0),
-                "failed": comparison.get("failed", 0),
-                "success_rate": (
-                    f"{(comparison['passed'] / comparison['total_checks'] * 100):.1f}%"
-                    if comparison.get("total_checks")
-                    else "N/A"
-                )
-            }
-        }
-
-        # salva workflow cache
         save_workflow_cache(wf_h, bl_h, inv_h, pk_h, report)
+        report_filename = _save_report_file(report)
 
-        # salva report file
-        report_filename = f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        report_path = OUTPUT_FOLDER / report_filename
-        with open(report_path, "w", encoding="utf-8") as f:
-            json.dump(report, f, indent=2, ensure_ascii=False)
-
-        return jsonify({
-            "success": True,
-            "report": report,
-            "report_file": report_filename,
-            "cached": False,
-            "workflow_hash": wf_h,
-            "files": files,
-            "forced": force,
-        }), 200
+        return jsonify(
+            {
+                "success": True,
+                "report": report,
+                "report_file": report_filename,
+                "cached": False,
+                "workflow_hash": wf_h,
+                "files": files,
+                "forced": force,
+            }
+        ), 200
 
     except Exception as e:
         logger.exception("Workflow failed")
@@ -365,40 +363,58 @@ def process_complete():
 
 
 @app.route("/api/reverify", methods=["POST"])
-def reverify_documents():
+def reverify():
+    """
+    Recebe novamente os arquivos, apaga SOMENTE caches dos hashes desses arquivos
+    e do workflow atual, e reprocessa com Gemini (force=True).
+    """
+    try:
+        if not ai_extractor:
+            return jsonify({"error": "AI extractor not initialized. Check GEMINI_API_KEY"}), 500
 
-    logging.info("🔄 Starting reverification")
+        files = _collect_files_from_request()
+        if "bl" not in files or "invoice" not in files:
+            return jsonify({"error": "At least BL and Invoice are required"}), 400
 
-    files = request.files
+        bl_h = sha256_file(files["bl"])
+        inv_h = sha256_file(files["invoice"])
+        pk_h = sha256_file(files["packing"]) if "packing" in files else None
+        wf_h = workflow_hash(bl_h, inv_h, pk_h)
 
-    extracted = {}
+        delete_document_cache_by_hash(bl_h)
+        delete_document_cache_by_hash(inv_h)
+        if pk_h:
+            delete_document_cache_by_hash(pk_h)
 
-    for doc_type in ["bl", "invoice", "packing"]:
-        if doc_type not in files:
-            continue
+        delete_workflow_cache(wf_h)
 
-        file = files[doc_type]
+        extracted_data: Dict[str, dict] = {
+            "bl": _extract_with_cache(files["bl"], "bl", force=True),
+            "invoice": _extract_with_cache(files["invoice"], "invoice", force=True),
+        }
+        if "packing" in files:
+            extracted_data["packing"] = _extract_with_cache(files["packing"], "packing", force=True)
 
-        filepath = save_uploaded_file(file, doc_type)
+        report = _build_report(files, extracted_data)
 
-        file_hash = sha256_file(filepath)
+        save_workflow_cache(wf_h, bl_h, inv_h, pk_h, report)
+        report_filename = _save_report_file(report)
 
-        # limpa SOMENTE cache desse arquivo
-        database.delete_document_cache_by_hash(file_hash)
+        return jsonify(
+            {
+                "success": True,
+                "reverified": True,
+                "report": report,
+                "report_file": report_filename,
+                "cached": False,
+                "workflow_hash": wf_h,
+                "files": files,
+            }
+        ), 200
 
-        logging.info(f"♻ Cache cleared for {doc_type}")
-
-        extracted[doc_type] = extractor.extract_from_file(filepath, doc_type)
-
-        save_document_cache(file_hash, doc_type, extracted[doc_type])
-
-    report = build_report(extracted)
-
-    return jsonify({
-        "success": True,
-        "report": report
-    })
-
+    except Exception as e:
+        logger.exception("Reverify failed")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/reports", methods=["GET"])
@@ -406,11 +422,13 @@ def list_reports():
     try:
         reports = []
         for file in OUTPUT_FOLDER.glob("*.json"):
-            reports.append({
-                "filename": file.name,
-                "created": datetime.fromtimestamp(file.stat().st_mtime).isoformat(),
-                "size": file.stat().st_size,
-            })
+            reports.append(
+                {
+                    "filename": file.name,
+                    "created": datetime.fromtimestamp(file.stat().st_mtime).isoformat(),
+                    "size": file.stat().st_size,
+                }
+            )
         reports.sort(key=lambda x: x["created"], reverse=True)
         return jsonify({"success": True, "reports": reports, "count": len(reports)}), 200
     except Exception as e:
@@ -419,7 +437,7 @@ def list_reports():
 
 
 @app.route("/api/reports/<filename>", methods=["GET"])
-def download_report(filename):
+def download_report(filename: str):
     try:
         return send_from_directory(str(OUTPUT_FOLDER), filename, as_attachment=True)
     except Exception:
@@ -432,9 +450,6 @@ def too_large(_):
 
 
 if __name__ == "__main__":
-    print()
-    print("AI DOCUMENT VERIFIER READY")
-    print("http://localhost:5000")
-    print()
-
+    print("\nAI DOCUMENT VERIFIER READY")
+    print("http://localhost:5000\n")
     app.run(host="0.0.0.0", port=5000, debug=True)
